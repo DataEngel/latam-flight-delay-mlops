@@ -17,8 +17,6 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # 5️⃣ Copy model and source code
-RUN mkdir -p /app/models
-COPY xgb_model.pkl /app/models/xgb_model.pkl
 COPY . .
 
 # 6️⃣ Environment variables

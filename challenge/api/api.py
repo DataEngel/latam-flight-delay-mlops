@@ -5,13 +5,17 @@ LATAM Airlines — Flight Delay Prediction API
 Deployable on Cloud Run, serving an XGBoost model trained via DelayModel.
 """
 
+import io
 import os
 import logging
+from datetime import datetime
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import pandas as pd
 import joblib
 import uvicorn
+from google.api_core.exceptions import NotFound
+from google.cloud import bigquery, storage
 
 # ==========================================================
 # Logging Configuration
@@ -23,19 +27,100 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ==========================================================
-# Model Loading
+# Model & BigQuery Configuration
 # ==========================================================
-MODEL_PATH = "/app/models/xgb_model.pkl"
-feature_names = []
+GCS_BUCKET_NAME = "latam-challenge-storage"
+GCS_MODEL_BLOB_PATH = "latam-model/xgb_model.pkl"
+BQ_TABLE_ID = "mlops-latam.latam_model_results.table_preds_model_latam"
 
-try:
-    xgb_model = joblib.load(MODEL_PATH)
-    feature_names = xgb_model.feature_names_in_
-    logger.info(f"✅ Model successfully loaded from {MODEL_PATH}")
-    logger.info(f"🔍 Model expects {len(feature_names)} features.")
-except Exception as e:
-    xgb_model = None
-    logger.error(f"❌ Failed to load model from {MODEL_PATH}: {e}")
+xgb_model = None
+feature_names = []
+bq_client = None
+
+
+def initialize_model() -> None:
+    """Load XGBoost model from Google Cloud Storage."""
+    global xgb_model, feature_names
+    try:
+        storage_client = storage.Client()
+        bucket = storage_client.bucket(GCS_BUCKET_NAME)
+        blob = bucket.blob(GCS_MODEL_BLOB_PATH)
+        model_bytes = blob.download_as_bytes()
+        xgb_model = joblib.load(io.BytesIO(model_bytes))
+        feature_names = getattr(xgb_model, "feature_names_in_", [])
+        logger.info(
+            f"✅ Model successfully loaded from gs://{GCS_BUCKET_NAME}/{GCS_MODEL_BLOB_PATH}"
+        )
+        logger.info(f"🔍 Model expects {len(feature_names)} features.")
+    except Exception as exc:
+        xgb_model = None
+        feature_names = []
+        logger.error(
+            "❌ Failed to load model from Google Cloud Storage: %s", exc, exc_info=True
+        )
+
+
+def initialize_bigquery() -> None:
+    """Ensure the BigQuery table exists for logging predictions."""
+    global bq_client
+    try:
+        bq_client = bigquery.Client()
+        schema = [
+            bigquery.SchemaField("prediction_timestamp", "TIMESTAMP", mode="REQUIRED"),
+            bigquery.SchemaField("airline", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("month", "INTEGER", mode="REQUIRED"),
+            bigquery.SchemaField("flight_type", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("delay_prediction", "INTEGER", mode="REQUIRED"),
+        ]
+        try:
+            bq_client.get_table(BQ_TABLE_ID)
+            logger.info(f"ℹ️ BigQuery table {BQ_TABLE_ID} is available.")
+        except NotFound:
+            table = bigquery.Table(BQ_TABLE_ID, schema=schema)
+            bq_client.create_table(table)
+            logger.info(f"✅ BigQuery table {BQ_TABLE_ID} created.")
+    except Exception as exc:
+        bq_client = None
+        logger.error(
+            "❌ Failed to initialize BigQuery client or ensure table: %s",
+            exc,
+            exc_info=True,
+        )
+
+
+def log_prediction_to_bigquery(flight_data: "FlightData", prediction: int) -> None:
+    """
+    Persist prediction metadata into BigQuery.
+
+    The function is intentionally best-effort: failures are logged but
+    do not propagate to the API response.
+    """
+    if bq_client is None:
+        logger.warning("⚠️ BigQuery client not available. Skipping logging.")
+        return
+
+    row = {
+        "prediction_timestamp": datetime.utcnow().isoformat() + "Z",
+        "airline": flight_data.OPERA,
+        "month": int(flight_data.MES),
+        "flight_type": flight_data.TIPOVUELO,
+        "delay_prediction": int(prediction),
+    }
+    try:
+        errors = bq_client.insert_rows_json(BQ_TABLE_ID, [row])
+        if errors:
+            logger.error("❌ Failed to log prediction to BigQuery: %s", errors)
+        else:
+            logger.info("📝 Prediction stored in BigQuery.")
+    except Exception as exc:
+        logger.error(
+            "❌ Unexpected error while logging to BigQuery: %s", exc, exc_info=True
+        )
+
+
+# Initialize external dependencies at import time
+initialize_model()
+initialize_bigquery()
 
 # ==========================================================
 # FastAPI App Initialization
@@ -125,6 +210,7 @@ def predict_delay(flight_data: FlightData):
 
         result = int(prediction[0])
         logger.info(f"✅ Prediction completed successfully: {result}")
+        log_prediction_to_bigquery(flight_data, result)
 
         return {
             "delay_prediction": result,
