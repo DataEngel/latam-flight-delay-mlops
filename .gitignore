@@ -1,22 +1,118 @@
-.venv/
-**/__pycache__/
+# ===============================
+# PYTHON GENERAL
+# ===============================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+.eggs/
+.Python
+.pytest_cache/
+pip-wheel-metadata/
+*.spec
+
+# ===============================
+# JUPYTER NOTEBOOKS
+# ===============================
+.ipynb_checkpoints/
+*.ipynb_convert/
+*.nbconvert/
+*.nbconvert.ipynb
+
+# ===============================
+# VIRTUAL ENVIRONMENTS
+# ===============================
+# Ignorar cualquier carpeta o archivo que empiece con "venv"
+venv*/
+**/venv*/
+**/venv*/*
+env*/
+**/env*/
+ENV*/
+**/.venv/
+**/.env/
+*.env
+*.venv
+
+# ===============================
+# DATA FILES & MODEL ARTIFACTS
+# ===============================
+data/*.csv
+data/*.parquet
+data/*.xlsx
 *.pkl
-*.pickle
-*.png
-**/dist/
-**/*.egg-info/
-**/.DS_Store/
-**/*.pyc
-*.conf
-build/
+*.h5
+*.joblib
+*.npy
+*.npz
+*.sav
+
+# ===============================
+# LOGS & OUTPUTS
+# ===============================
+logs/
+*.log
+*.out
+*.err
+
+# ===============================
+# IDEs & EDITORS
+# ===============================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+*.code-workspace
+
+# ===============================
+# SYSTEM FILES
+# ===============================
 .DS_Store
-test-results
-**/.ipynb_checkpoints
+Thumbs.db
+desktop.ini
+
+# ===============================
+# CLOUD & DEPLOYMENT
+# ===============================
+# Compilaciones y Docker
+*.tar
+*.gz
+*.zip
+*.bak
+Dockerfile.*
+docker-compose.override.yml
+__MACOSX/
+
+# ===============================
+# CI/CD & CREDENTIALS
+# ===============================
+# Archivos sensibles o temporales
+*.key
+*.pem
 *.json
-.coverage
-.coveragerc
+*.secret
 secrets/
-.vscode
-.pytest_cache
-insecure_report.txt
-reports
+.env.local
+.env.prod
+.env.dev
+.env.test
+
+# ===============================
+# CACHE & TEMP FILES
+# ===============================
+*.tmp
+*.bak
+*.swp
+*.swo
+*.lock
+*.pid
+*.orig
+.cache/
+build/
+dist/
+htmlcov/
+.coverage
+coverage.xml
