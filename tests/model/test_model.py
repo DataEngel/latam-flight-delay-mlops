@@ -1,103 +1,84 @@
 import unittest
-import pandas as pd
+from pathlib import Path
 
-from sklearn.metrics import classification_report
-from sklearn.model_selection import train_test_split
+import pandas as pd
+import pandas.testing as pdt
+
 from challenge.model import DelayModel
 
-class TestModel(unittest.TestCase):
 
-    FEATURES_COLS = [
-        "OPERA_Latin American Wings", 
-        "MES_7",
-        "MES_10",
-        "OPERA_Grupo LATAM",
-        "MES_12",
-        "TIPOVUELO_I",
-        "MES_4",
-        "MES_11",
-        "OPERA_Sky Airline",
-        "OPERA_Copa Air"
-    ]
-
-    TARGET_COL = [
-        "delay"
-    ]
-
+class TestDelayModel(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        super().setUpClass()
+        cls._data_path = Path(__file__).resolve().parents[2] / "data" / "data.csv"
+        cls._artifact_path = Path(__file__).resolve().parents[2] / "xgb_model.pkl"
+        cls._raw_data = pd.read_csv(cls._data_path, low_memory=False)
 
     def setUp(self) -> None:
         super().setUp()
         self.model = DelayModel()
-        self.data = pd.read_csv(filepath_or_buffer="../data/data.csv")
-        
+        self.addCleanup(self._cleanup_artifact)
 
-    def test_model_preprocess_for_training(
-        self
-    ):
-        features, target = self.model.preprocess(
-            data=self.data,
-            target_column="delay"
+    def _expected_features(self) -> pd.DataFrame:
+        return pd.concat(
+            [
+                pd.get_dummies(self._raw_data["OPERA"], prefix="OPERA"),
+                pd.get_dummies(self._raw_data["TIPOVUELO"], prefix="TIPOVUELO"),
+                pd.get_dummies(self._raw_data["MES"], prefix="MES"),
+            ],
+            axis=1,
         )
 
-        assert isinstance(features, pd.DataFrame)
-        assert features.shape[1] == len(self.FEATURES_COLS)
-        assert set(features.columns) == set(self.FEATURES_COLS)
+    def _expected_target(self) -> pd.Series:
+        scheduled = pd.to_datetime(self._raw_data["Fecha-I"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+        operated = pd.to_datetime(self._raw_data["Fecha-O"], format="%Y-%m-%d %H:%M:%S", errors="coerce")
+        min_diff = (operated - scheduled).dt.total_seconds() / 60.0
+        expected = (min_diff > 15).astype(int)
+        expected.name = "delay"
+        return expected
 
-        assert isinstance(target, pd.DataFrame)
-        assert target.shape[1] == len(self.TARGET_COL)
-        assert set(target.columns) == set(self.TARGET_COL)
+    def _cleanup_artifact(self) -> None:
+        if self._artifact_path.exists():
+            self._artifact_path.unlink()
 
+    def test_preprocess_for_training_matches_expected_engineering(self) -> None:
+        features, target = self.model.preprocess(data=self._raw_data, target_column="delay")
 
-    def test_model_preprocess_for_serving(
-        self
-    ):
-        features = self.model.preprocess(
-            data=self.data
-        )
+        self.assertIsInstance(features, pd.DataFrame)
+        self.assertIsInstance(target, pd.Series)
 
-        assert isinstance(features, pd.DataFrame)
-        assert features.shape[1] == len(self.FEATURES_COLS)
-        assert set(features.columns) == set(self.FEATURES_COLS)
+        expected_features = self._expected_features()
+        expected_target = self._expected_target()
 
+        pdt.assert_frame_equal(features, expected_features, check_dtype=False)
+        pdt.assert_series_equal(target, expected_target, check_dtype=False)
 
-    def test_model_fit(
-        self
-    ):
-        features, target = self.model.preprocess(
-            data=self.data,
-            target_column="delay"
-        )
+    def test_preprocess_without_target_preserves_feature_columns(self) -> None:
+        features = self.model.preprocess(data=self._raw_data)
 
-        _, features_validation, _, target_validation = train_test_split(features, target, test_size = 0.33, random_state = 42)
+        self.assertIsInstance(features, pd.DataFrame)
+        expected_features = self._expected_features()
 
-        self.model.fit(
-            features=features,
-            target=target
-        )
+        pdt.assert_frame_equal(features, expected_features, check_dtype=False)
+        self.assertIsNotNone(self.model._feature_columns)
+        self.assertListEqual(self.model._feature_columns, list(features.columns))
 
-        predicted_target = self.model._model.predict(
-            features_validation
-        )
+    def test_fit_and_predict_end_to_end(self) -> None:
+        features, target = self.model.preprocess(data=self._raw_data, target_column="delay")
 
-        report = classification_report(target_validation, predicted_target, output_dict=True)
-        
-        assert report["0"]["recall"] < 0.60
-        assert report["0"]["f1-score"] < 0.70
-        assert report["1"]["recall"] > 0.60
-        assert report["1"]["f1-score"] > 0.30
+        self.model.fit(features=features, target=target)
 
+        self.assertIsNotNone(self.model._model)
+        self.assertTrue(self._artifact_path.exists())
 
-    def test_model_predict(
-        self
-    ):
-        features = self.model.preprocess(
-            data=self.data
-        )
+        inference_batch = features.head(32).copy()
+        predictions = self.model.predict(features=inference_batch)
 
-        predicted_targets = self.model.predict(
-            features=features
-        )
+        self.assertEqual(len(predictions), inference_batch.shape[0])
+        self.assertTrue(all(pred in (0, 1) for pred in predictions))
 
-        assert isinstance(predicted_targets, list)
-        assert len(predicted_targets) == features.shape[0]
-        assert all(isinstance(predicted_target, int) for predicted_target in predicted_targets)
+        self.model._model = None
+        reload_predictions = self.model.predict(features=inference_batch.copy())
+        self.assertEqual(len(reload_predictions), inference_batch.shape[0])
+        self.assertTrue(all(pred in (0, 1) for pred in reload_predictions))

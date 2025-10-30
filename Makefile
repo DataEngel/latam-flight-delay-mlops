@@ -32,13 +32,16 @@ stress-test:
 
 .PHONY: model-test
 model-test:			## Run tests and coverage
-	mkdir reports || true
-	pytest --cov-config=.coveragerc --cov-report term --cov-report html:reports/html --cov-report xml:reports/coverage.xml --junitxml=reports/junit.xml --cov=challenge tests/model
+	mkdir -p reports
+	NPY_DISABLE_MACOS_ACCELERATE=1 pytest --cov-config=.coveragerc --cov-report term --cov-report html:reports/html --cov-report xml:reports/coverage.xml --junitxml=reports/junit.xml --cov=challenge.model tests/model
 
 .PHONY: api-test
 api-test:			## Run tests and coverage
 	mkdir reports || true
 	pytest --cov-config=.coveragerc --cov-report term --cov-report html:reports/html --cov-report xml:reports/coverage.xml --junitxml=reports/junit.xml --cov=challenge tests/api
+
+.PHONY: test
+test: model-test api-test	## Run model and API test suites
 
 .PHONY: build
 build:			## Build locally the python artifact

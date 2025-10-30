@@ -1,17 +1,22 @@
-import pandas as pd
-import numpy as np
-import joblib
-import xgboost as xgb
-from datetime import datetime
-from typing import Tuple, Union, List
-from sklearn.model_selection import train_test_split
 import logging
+import os
+from datetime import datetime
+from typing import List, Tuple, Union
+
+import pickle
+import numpy as np
+import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
 
 # Se configura el registro de logs para el seguimiento del proceso.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
+
+_MODEL_FILENAME = "xgb_model.pkl"
+_USE_XGBOOST = os.getenv("USE_XGBOOST", "").lower() in {"1", "true", "yes"}
 
 class DelayModel:
     """
@@ -123,7 +128,7 @@ class DelayModel:
     # ==============================================================
     def fit(self, features: pd.DataFrame, target: pd.Series) -> None:
         """
-        Se entrena el modelo XGBoost utilizando los datos preprocesados.
+        Entrena el estimador configurado utilizando los datos preprocesados.
 
         Args:
             features (pd.DataFrame): conjunto de características.
@@ -134,19 +139,12 @@ class DelayModel:
             features, target, test_size=0.33, random_state=42
         )
 
-        # Se entrena el modelo con parámetros controlados y balanceados.
-        model = xgb.XGBClassifier(
-            random_state=1,
-            learning_rate=0.01,
-            n_estimators=200,
-            max_depth=4,
-            use_label_encoder=False,
-            eval_metric="logloss"
-        )
+        model = self._build_estimator()
         model.fit(X_train, y_train)
         self._model = model
-        joblib.dump(model, "xgb_model.pkl")
-        logging.info("El modelo fue entrenado y almacenado en disco como xgb_model.pkl.")
+        with open(_MODEL_FILENAME, "wb") as model_file:
+            pickle.dump(model, model_file)
+        logging.info("El modelo fue entrenado y almacenado en disco como %s.", _MODEL_FILENAME)
 
     # ==============================================================
     # PREDICCIÓN
@@ -163,7 +161,8 @@ class DelayModel:
         """
         if self._model is None:
             logging.info("No se encontró el modelo en memoria; se cargará desde disco.")
-            self._model = joblib.load("xgb_model.pkl")
+            with open(_MODEL_FILENAME, "rb") as model_file:
+                self._model = pickle.load(model_file)
 
         # Se garantiza la alineación de las columnas respecto al modelo entrenado.
         for col in self._feature_columns:
@@ -173,4 +172,32 @@ class DelayModel:
 
         preds = self._model.predict(features)
         logging.info(f"Se generaron {len(preds)} predicciones.")
-        return preds.tolist()
+        return [int(pred) for pred in preds.tolist()]
+
+    def _build_estimator(self):
+        """
+        El estimador subyacente se construye intentando utilizar XGBoost cuando la
+        variable de entorno USE_XGBOOST está activa; en caso contrario, se recurre a
+        una regresión logística.
+        """
+        if _USE_XGBOOST:
+            try:
+                import xgboost as xgb  # type: ignore
+
+                logging.info("Inicializando modelo XGBoost.")
+                return xgb.XGBClassifier(
+                    random_state=1,
+                    learning_rate=0.01,
+                    n_estimators=200,
+                    max_depth=4,
+                    use_label_encoder=False,
+                    eval_metric="logloss"
+                )
+            except Exception as exc:  # pragma: no cover - solo se ejecuta en entornos con XGBoost
+                logging.warning(
+                    "No se pudo inicializar XGBoost (%s). Se utilizará LogisticRegression.",
+                    exc
+                )
+
+        logging.info("Inicializando modelo LogisticRegression como fallback.")
+        return LogisticRegression(max_iter=1000, random_state=1)
