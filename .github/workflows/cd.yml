@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev 
 
 jobs:
   deploy:
@@ -26,7 +27,7 @@ jobs:
       - name: 🐳 Construir y subir imagen a Artifact Registry
         run: |
           gcloud auth configure-docker us-central1-docker.pkg.dev
-          docker build -t us-central1-docker.pkg.dev/mlops-latam/mlopsengel/api-inference-deploy:latest challenge/
+          docker build -t us-central1-docker.pkg.dev/mlops-latam/mlopsengel/api-inference-deploy:latest challenge/api/
           docker push us-central1-docker.pkg.dev/mlops-latam/mlopsengel/api-inference-deploy:latest
 
       - name: 🚀 Desplegar en Cloud Run con 8GB RAM
