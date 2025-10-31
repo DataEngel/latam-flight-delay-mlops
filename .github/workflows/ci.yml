@@ -12,7 +12,7 @@ on:
 
 jobs:
   tests:
-    name: Run Model Tests
+    name: Run Model and API Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -31,3 +31,6 @@ jobs:
 
       - name: Run model tests
         run: make model-test
+
+      - name: Run API tests
+        run: make api-test

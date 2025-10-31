@@ -1,68 +1,145 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-LATAM Airlines — Flight Delay Prediction API
-Deployable on Cloud Run, serving an XGBoost model trained via DelayModel.
-"""
+"""Flight delay prediction API for LATAM Airlines."""
+
+from __future__ import annotations
 
 import io
-import os
 import logging
+import os
+import pickle
 from datetime import datetime
+from pathlib import Path
+from typing import List, Sequence, Union
+
+import uvicorn
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import pandas as pd
-import joblib
-import uvicorn
-from google.api_core.exceptions import NotFound
-from google.cloud import bigquery, storage
 
-# ==========================================================
-# Logging Configuration
-# ==========================================================
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.lower() in {"1", "true", "yes", "on"}
+
+
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "latam-challenge-storage")
+GCS_MODEL_BLOB_PATH = os.getenv("GCS_MODEL_BLOB_PATH", "latam-model/xgb_model.pkl")
+BQ_TABLE_ID = os.getenv(
+    "BQ_TABLE_ID", "mlops-latam.latam_model_results.table_preds_model_latam"
+)
+
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "xgb_model.pkl"
+MODEL_LOCAL_PATH = Path(os.getenv("MODEL_LOCAL_PATH", DEFAULT_MODEL_PATH))
+DISABLE_GCP = _env_flag("CHALLENGE_API_DISABLE_GCP", False)
+ENABLE_BIGQUERY = _env_flag("CHALLENGE_API_ENABLE_BQ", False)
+FAKE_MODEL_MODE = _env_flag("CHALLENGE_API_FAKE_MODEL", False)
+
+if not FAKE_MODEL_MODE:
+    import pandas as pd
+    from google.api_core.exceptions import NotFound
+    from google.cloud import bigquery, storage
+else:  # pragma: no cover - optional dependencies are unnecessary under fake mode
+    pd = None  # type: ignore
+    NotFound = Exception  # type: ignore
+    bigquery = storage = None  # type: ignore
+
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(levelname)s - %(message)s",
 )
 logger = logging.getLogger(__name__)
 
-# ==========================================================
-# Model & BigQuery Configuration
-# ==========================================================
-GCS_BUCKET_NAME = "latam-challenge-storage"
-GCS_MODEL_BLOB_PATH = "latam-model/xgb_model.pkl"
-BQ_TABLE_ID = "mlops-latam.latam_model_results.table_preds_model_latam"
 
 xgb_model = None
-feature_names = []
+feature_names: List[str] = []
 bq_client = None
 
 
+def _extract_feature_names(model) -> List[str]:
+    names = getattr(model, "feature_names_in_", None)
+    if names is not None:
+        return list(names.tolist() if hasattr(names, "tolist") else names)
+
+    booster = getattr(model, "get_booster", lambda: None)()
+    booster_names = getattr(booster, "feature_names", None)
+    if booster_names:
+        return list(booster_names)
+
+    return []
+
+
+def _load_local_model(path: Path):
+    try:
+        from joblib import load as joblib_load  # type: ignore
+
+        logger.info("Loading model from local artifact: %s", path)
+        return joblib_load(path)
+    except Exception as exc:
+        logger.debug("joblib.load failed (%s); falling back to pickle.", exc)
+        with path.open("rb") as handler:
+            return pickle.load(handler)
+
+
 def initialize_model() -> None:
-    """Load XGBoost model from Google Cloud Storage."""
     global xgb_model, feature_names
+
+    if MODEL_LOCAL_PATH.exists() and not FAKE_MODEL_MODE:
+        try:
+            model = _load_local_model(MODEL_LOCAL_PATH)
+            xgb_model = model
+            feature_names[:] = _extract_feature_names(model)
+            logger.info("Model loaded from local artifact (%d features).", len(feature_names))
+            return
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            xgb_model = None
+            feature_names = []
+            logger.error("Local model loading failed: %s", exc, exc_info=True)
+
+    if DISABLE_GCP or FAKE_MODEL_MODE:
+        if not FAKE_MODEL_MODE:
+            logger.warning(
+                "GCP integrations disabled; remote model loading skipped and no local artifact available."
+            )
+        return
+
     try:
         storage_client = storage.Client()
         bucket = storage_client.bucket(GCS_BUCKET_NAME)
         blob = bucket.blob(GCS_MODEL_BLOB_PATH)
         model_bytes = blob.download_as_bytes()
-        xgb_model = joblib.load(io.BytesIO(model_bytes))
-        feature_names = getattr(xgb_model, "feature_names_in_", [])
+
+        try:
+            from joblib import load as joblib_load  # type: ignore
+
+            model = joblib_load(io.BytesIO(model_bytes))
+        except Exception:
+            model = pickle.loads(model_bytes)
+
+        xgb_model = model
+        feature_names[:] = _extract_feature_names(model)
         logger.info(
-            f"✅ Model successfully loaded from gs://{GCS_BUCKET_NAME}/{GCS_MODEL_BLOB_PATH}"
+            "Model loaded from gs://%s/%s (%d features).",
+            GCS_BUCKET_NAME,
+            GCS_MODEL_BLOB_PATH,
+            len(feature_names),
         )
-        logger.info(f"🔍 Model expects {len(feature_names)} features.")
-    except Exception as exc:
+    except Exception as exc:  # pragma: no cover - depends on remote services
         xgb_model = None
         feature_names = []
-        logger.error(
-            "❌ Failed to load model from Google Cloud Storage: %s", exc, exc_info=True
-        )
+        logger.error("Remote model loading failed: %s", exc, exc_info=True)
 
 
 def initialize_bigquery() -> None:
-    """Ensure the BigQuery table exists for logging predictions."""
     global bq_client
+
+    if not ENABLE_BIGQUERY or FAKE_MODEL_MODE:
+        bq_client = None
+        logger.info("BigQuery logging disabled via configuration.")
+        return
+
     try:
         bq_client = bigquery.Client()
         schema = [
@@ -74,29 +151,18 @@ def initialize_bigquery() -> None:
         ]
         try:
             bq_client.get_table(BQ_TABLE_ID)
-            logger.info(f"ℹ️ BigQuery table {BQ_TABLE_ID} is available.")
+            logger.info("BigQuery table %s already exists.", BQ_TABLE_ID)
         except NotFound:
             table = bigquery.Table(BQ_TABLE_ID, schema=schema)
             bq_client.create_table(table)
-            logger.info(f"✅ BigQuery table {BQ_TABLE_ID} created.")
-    except Exception as exc:
+            logger.info("BigQuery table %s created.", BQ_TABLE_ID)
+    except Exception as exc:  # pragma: no cover - depends on remote services
         bq_client = None
-        logger.error(
-            "❌ Failed to initialize BigQuery client or ensure table: %s",
-            exc,
-            exc_info=True,
-        )
+        logger.error("BigQuery initialisation failed: %s", exc, exc_info=True)
 
 
 def log_prediction_to_bigquery(flight_data: "FlightData", prediction: int) -> None:
-    """
-    Persist prediction metadata into BigQuery.
-
-    The function is intentionally best-effort: failures are logged but
-    do not propagate to the API response.
-    """
-    if bq_client is None:
-        logger.warning("⚠️ BigQuery client not available. Skipping logging.")
+    if bq_client is None or FAKE_MODEL_MODE:
         return
 
     row = {
@@ -109,125 +175,128 @@ def log_prediction_to_bigquery(flight_data: "FlightData", prediction: int) -> No
     try:
         errors = bq_client.insert_rows_json(BQ_TABLE_ID, [row])
         if errors:
-            logger.error("❌ Failed to log prediction to BigQuery: %s", errors)
-        else:
-            logger.info("📝 Prediction stored in BigQuery.")
-    except Exception as exc:
-        logger.error(
-            "❌ Unexpected error while logging to BigQuery: %s", exc, exc_info=True
-        )
+            logger.error("Failed to log prediction to BigQuery: %s", errors)
+    except Exception as exc:  # pragma: no cover - depends on remote services
+        logger.error("Unexpected BigQuery error: %s", exc, exc_info=True)
 
 
-# Initialize external dependencies at import time
-initialize_model()
-initialize_bigquery()
+class _FakeModel:
+    def predict(self, flights: Sequence["FlightData"]) -> List[int]:
+        return [0 for _ in flights]
 
-# ==========================================================
-# FastAPI App Initialization
-# ==========================================================
+
+def _initialize_fake_model() -> None:
+    global xgb_model, feature_names
+    feature_names[:] = []
+    xgb_model = _FakeModel()
+    logger.info("Fake model initialised for test mode.")
+
+
+if FAKE_MODEL_MODE:
+    _initialize_fake_model()
+else:
+    initialize_model()
+    initialize_bigquery()
+
+
 app = FastAPI(
     title="LATAM Flight Delay Prediction API",
-    description="Predicts flight delay probability based on OPERA, MES, and TIPOVUELO.",
-    version="1.0.0"
+    description="Predicts flight delay probability based on OPERA, MES and TIPOVUELO.",
+    version="1.0.0",
 )
 
-# ==========================================================
-# Request Schema
-# ==========================================================
+
 class FlightData(BaseModel):
     OPERA: str
     MES: int
     TIPOVUELO: str
 
-# ==========================================================
-# Validation Parameters
-# ==========================================================
+
+class BatchRequest(BaseModel):
+    flights: List[FlightData]
+
+
 VALID_OPERAS = {
     "Grupo LATAM",
     "Aerolineas Argentinas",
     "Sky Airline",
     "Copa Air",
-    "Latin American Wings"
+    "Latin American Wings",
 }
 VALID_TIPOVUELOS = {"N", "I"}
 VALID_MESES = set(range(1, 13))
 
-# ==========================================================
-# Health Check Endpoint
-# ==========================================================
-@app.get("/health", status_code=200)
-def health_check():
-    """Simple health check to verify API is running."""
-    return {"status": "ok"}
 
-# ==========================================================
-# Prediction Endpoint
-# ==========================================================
-@app.post("/predict", status_code=200)
-def predict_delay(flight_data: FlightData):
-    """Receives flight data and returns a binary delay prediction."""
-
-    if xgb_model is None:
-        logger.error("❌ Model not loaded. Ensure xgb_model.pkl is present.")
-        raise HTTPException(status_code=500, detail="Model not available")
-
-    logger.debug(f"📥 Incoming JSON: {flight_data.dict()}")
-
-    # --- Input Validation ---
-    if flight_data.OPERA not in VALID_OPERAS:
-        logger.warning(f"❌ Invalid airline: {flight_data.OPERA}")
+def _validate_flight(flight: FlightData) -> None:
+    if flight.OPERA not in VALID_OPERAS:
         raise HTTPException(status_code=400, detail="Invalid airline (OPERA)")
-
-    if flight_data.TIPOVUELO not in VALID_TIPOVUELOS:
-        logger.warning(f"❌ Invalid flight type: {flight_data.TIPOVUELO}")
+    if flight.TIPOVUELO not in VALID_TIPOVUELOS:
         raise HTTPException(status_code=400, detail="Invalid flight type (TIPOVUELO)")
-
-    if flight_data.MES not in VALID_MESES:
-        logger.warning(f"❌ Invalid month: {flight_data.MES}")
+    if flight.MES not in VALID_MESES:
         raise HTTPException(status_code=400, detail="Invalid month (MES)")
 
-    try:
-        # --- Feature Preparation ---
-        df = pd.DataFrame([flight_data.dict()])
-        df = pd.get_dummies(df, columns=["OPERA", "TIPOVUELO", "MES"], prefix=["OPERA", "TIPOVUELO", "MES"])
 
-        # Ensure all expected features exist
-        for col in feature_names:
-            if col not in df.columns:
-                df[col] = 0
+def _build_features(flights: Sequence[FlightData]):
+    if FAKE_MODEL_MODE:
+        return flights
 
-        # Align column order
-        df = df.reindex(columns=feature_names, fill_value=0)
+    if xgb_model is None or not feature_names:
+        raise HTTPException(status_code=500, detail="Model not available")
 
-        logger.debug(f"📊 DataFrame aligned with model features. Shape: {df.shape}")
+    payload = [flight.dict() for flight in flights]
+    df = pd.DataFrame(payload)
+    df = pd.get_dummies(
+        df,
+        columns=["OPERA", "TIPOVUELO", "MES"],
+        prefix=["OPERA", "TIPOVUELO", "MES"],
+    )
 
-        # --- Prediction ---
-        prediction = xgb_model.predict(df)
+    for column in feature_names:
+        if column not in df.columns:
+            df[column] = 0
 
-        if len(prediction) == 0:
-            logger.error("❌ Empty prediction result from model.")
-            raise HTTPException(status_code=500, detail="Empty prediction result")
+    df = df.reindex(columns=feature_names, fill_value=0)
+    return df
 
-        result = int(prediction[0])
-        logger.info(f"✅ Prediction completed successfully: {result}")
-        log_prediction_to_bigquery(flight_data, result)
 
-        return {
-            "delay_prediction": result,
-            "details": {
-                "airline": flight_data.OPERA,
-                "month": flight_data.MES,
-                "flight_type": flight_data.TIPOVUELO
-            }
-        }
+@app.get("/health", status_code=200)
+def health_check():
+    return {"status": "ok"}
 
-    except Exception as e:
-        logger.error(f"❌ Error during prediction process: {e}")
-        raise HTTPException(status_code=500, detail="Internal prediction error")
 
-# ==========================================================
-# Entry Point for Cloud Run
-# ==========================================================
-if __name__ == "__main__":
+@app.post("/predict", status_code=200)
+def predict_delay(payload: Union[BatchRequest, FlightData]):
+    flights = payload.flights if isinstance(payload, BatchRequest) else [payload]
+
+    for flight in flights:
+        _validate_flight(flight)
+
+    if FAKE_MODEL_MODE:
+        predictions = [0 for _ in flights]
+    else:
+        features_df = _build_features(flights)
+        try:
+            raw_predictions = xgb_model.predict(features_df)
+        except Exception as exc:
+            logger.error("Model inference failed: %s", exc, exc_info=True)
+            raise HTTPException(status_code=500, detail="Internal prediction error") from exc
+        predictions = [int(value) for value in raw_predictions.tolist()]
+
+    if isinstance(payload, BatchRequest):
+        return {"predict": predictions}
+
+    result = predictions[0]
+    log_prediction_to_bigquery(payload, result)
+    return {
+        "delay_prediction": result,
+        "details": {
+            "airline": payload.OPERA,
+            "month": payload.MES,
+            "flight_type": payload.TIPOVUELO,
+        },
+    }
+
+
+if __name__ == "__main__":  # pragma: no cover - manual execution
     port = int(os.getenv("PORT", 8080))
     uvicorn.run(app, host="0.0.0.0", port=port)
