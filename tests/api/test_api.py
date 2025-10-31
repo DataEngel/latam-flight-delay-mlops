@@ -1,11 +1,16 @@
 import unittest
 
 from fastapi.testclient import TestClient
+import importlib
+import os
 from challenge import app
 
 
 class TestBatchPipeline(unittest.TestCase):
     def setUp(self):
+        os.environ["CHALLENGE_API_FAKE_MODEL"] = "1"
+        importlib.reload(__import__("challenge.api.api"))
+        from challenge import app  # ensure fresh instance
         self.client = TestClient(app)
         
     def test_should_get_predict(self):
