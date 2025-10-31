@@ -68,6 +68,22 @@ El método `DelayModel.preprocess` genera las siguientes características:
     ```
   La respuesta productiva incluye `delay_prediction` y metadatos; el modo batch replica el contrato antiguo devolviendo `{"predict": [0, ...]}`.
 
+#### Ejemplos en producción
+
+```bash
+curl -X POST https://api-inference-deploy-581710028917.us-central1.run.app/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"OPERA": "Grupo LATAM", "TIPOVUELO": "N", "MES": 3}'
+
+# {"delay_prediction":0,"details":{"airline":"Grupo LATAM","month":3,"flight_type":"N"}}
+
+curl -X POST https://api-inference-deploy-581710028917.us-central1.run.app/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"OPERA": "Latin American Wings", "TIPOVUELO": "I", "MES": 10}'
+
+# {"delay_prediction":1,"details":{"airline":"Latin American Wings","month":10,"flight_type":"I"}}
+```
+
 ### 4.2 Carga del modelo
 
 Prioridades:
@@ -174,9 +190,4 @@ Notas:
 
 1. `make install`
 2. `make model-test`
-3. (Opcional) `LOCUST_USERS=5 LOCUST_RUNTIME=30s make stress-test` en un entorno con salida a Internet.
-4. Despliegue manual o vía `cd.yml` con las credenciales configuradas.
-
----
-
-Ante cualquier ejecución fallida del stress test por `NameResolutionError`, verificar la conectividad DNS del entorno o ejecutar la prueba desde un runner con acceso directo a Internet.
+3. Despliegue manual o vía `cd.yml` con las credenciales configuradas.
