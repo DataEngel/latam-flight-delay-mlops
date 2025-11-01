@@ -2,59 +2,59 @@
 
 ## 1. Resumen Ejecutivo
 
-Este repositorio operacionaliza el modelo de predicción de retrasos para vuelos en SCL y publica un servicio FastAPI desplegado en Cloud Run. El trabajo se dividió en:
+El repositorio fue preparado para operacionalizar el modelo de predicción de retrasos para vuelos en SCL y para publicar un servicio FastAPI desplegado en Cloud Run. Las actividades se organizaron de la siguiente manera:
 
-- Transcripción y endurecimiento del modelo (`challenge/model.py`) con pruebas unitarias exhaustivas.
-- Implementación de la API (`challenge/api/api.py`) preparada para producción y para entornos de prueba sin dependencias externas.
-- Automatización de pruebas (`make model-test`, `make stress-test`) y pipeline CI en GitHub Actions.
-- Despliegue en Google Cloud Run (URL: `https://api-inference-deploy-581710028917.us-central1.run.app`).
+- El modelo de `challenge/model.py` fue trasladado y endurecido, quedando cubierto por pruebas unitarias.
+- La API de `challenge/api/api.py` fue instrumentada para producción y para entornos de prueba libres de dependencias externas.
+- Las pruebas (`make model-test`, `make api-test`, `make stress-test`) fueron automatizadas dentro de un workflow de GitHub Actions.
+- El despliegue fue realizado en Google Cloud Run (`https://api-inference-deploy-581710028917.us-central1.run.app`).
 
 ## 2. Estructura Relevante del Repositorio
 
-- `challenge/model.py`: lógica de preprocesamiento, entrenamiento y predicción.
-- `challenge/api/api.py`: servicio FastAPI con modos producción y test.
-- `challenge/__init__.py`: carga perezosa de la aplicación para minimizar dependencias.
-- `tests/model/`, `tests/stress/`: suites de pruebas unitarias y de carga.
-- `sitecustomize.py`: ajustes de compatibilidad para ejecutar Locust 1.6 en entornos modernos.
-- `Makefile`: orquestación de instalación, pruebas, cobertura y stress test.
-- `.github/workflows/`: pipelines CI/CD.
+- `challenge/model.py`: contiene la lógica de preprocesamiento, entrenamiento y predicción.
+- `challenge/api/api.py`: expone el servicio FastAPI en modos productivo y simulado.
+- `challenge/__init__.py`: asegura una carga perezosa de la aplicación.
+- `tests/model/`, `tests/api/`, `tests/stress/`: alojan las suites de pruebas.
+- `sitecustomize.py`: mantiene compatibilidad para Locust 1.6 en entornos modernos.
+- `Makefile`: orquesta instalación, pruebas, cobertura y stress test.
+- `.github/workflows/`: guarda los pipelines de CI/CD.
 
 ## 3. Modelo de Predicción (`challenge/model.py`)
 
 ### 3.1 Preprocesamiento
-El método `DelayModel.preprocess` genera las siguientes características:
 
-1. Variables derivadas de fechas:
-   - `period_day`, `high_season`, `min_diff`.
-2. Creación de la etiqueta `delay` (si no existe) evaluando `min_diff > 15`.
-3. One-hot encoding para `OPERA`, `TIPOVUELO`, `MES` preservando el orden de columnas para inferencia.
+Las transformaciones son ejecutadas por `DelayModel.preprocess` bajo estas reglas:
+
+1. Son calculadas las variables `period_day`, `high_season` y `min_diff`.
+2. La etiqueta `delay` es generada cuando falta, aplicando el criterio `min_diff > 15`.
+3. El one-hot encoding se aplica a `OPERA`, `TIPOVUELO` y `MES`, preservando el orden de columnas esperado en inferencia.
 
 ### 3.2 Entrenamiento
 
-- Se usa `train_test_split` (33%) para obtener un conjunto de validación.
-- `_build_estimator()` intenta cargar XGBoost solo si `USE_XGBOOST` está definido; de lo contrario, utiliza `LogisticRegression` como fallback.
-- El modelo entrenado se persiste en `xgb_model.pkl` mediante `pickle`.
+- El particionado `train_test_split` (33%) es utilizado para crear un conjunto de validación.
+- La función `_build_estimator()` intenta cargar XGBoost cuando se define `USE_XGBOOST`; en caso contrario, se usa `LogisticRegression`.
+- El artefacto final se guarda en `xgb_model.pkl` mediante `pickle`.
 
 ### 3.3 Predicción
 
-- Alinea columnas y, en caso de ser necesario, recarga el modelo desde disco.
-- Devuelve una lista de enteros (0 o 1).
+- El conjunto de columnas se alinea y, si resulta necesario, el modelo es recargado desde disco.
+- Las predicciones son devueltas como enteros `0` o `1`.
 
 ### 3.4 Pruebas del modelo
 
-`tests/model/test_model.py` valida:
+El archivo `tests/model/test_model.py` verifica:
 
-- Preprocesamiento con y sin la etiqueta.
-- Entrenamiento y predicción end-to-end, incluyendo recarga desde disco.
-- Limpieza del artefacto generado tras cada prueba.
+- El preprocesamiento con y sin la etiqueta original.
+- El flujo entrenamiento → predicción, incluyendo la recarga del artefacto.
+- La eliminación del archivo generado tras cada prueba.
 
 ## 4. Servicio FastAPI (`challenge/api/api.py`)
 
 ### 4.1 Endpoints
 
-- `GET /health`: verificación ligera.
-- `POST /predict`: acepta dos formatos:
-  - Payload simple (API productiva):
+- `GET /health`: ofrece una verificación sencilla.
+- `POST /predict`: admite dos modalidades:
+  - Formato simple empleado en producción:
     ```json
     {
       "OPERA": "Grupo LATAM",
@@ -62,11 +62,15 @@ El método `DelayModel.preprocess` genera las siguientes características:
       "TIPOVUELO": "N"
     }
     ```
-  - Payload batch legado (usado en tests históricos):
+  - Formato batch legado utilizado por suites históricas:
     ```json
-    {"flights": [{ ... }]}
+    {
+      "flights": [
+        { "OPERA": "Grupo LATAM", "MES": 3, "TIPOVUELO": "N" }
+      ]
+    }
     ```
-  La respuesta productiva incluye `delay_prediction` y metadatos; el modo batch replica el contrato antiguo devolviendo `{"predict": [0, ...]}`.
+  En la versión productiva se entrega `delay_prediction` junto con los metadatos; en modo batch se regresa `{"predict": [0, ...]}` para mantener compatibilidad.
 
 #### Ejemplos en producción
 
@@ -86,33 +90,33 @@ curl -X POST https://api-inference-deploy-581710028917.us-central1.run.app/predi
 
 ### 4.2 Carga del modelo
 
-Prioridades:
+El modelo es cargado siguiendo este orden de precedencia:
 
-1. Artefacto local (`MODEL_LOCAL_PATH`, por defecto `challenge/xgb_model.pkl`).
-2. Si no existe y `CHALLENGE_API_DISABLE_GCP` es falso, descarga desde GCS (`GCS_BUCKET_NAME`, `GCS_MODEL_BLOB_PATH`).
-3. Modo fake (`CHALLENGE_API_FAKE_MODEL=1`) para pruebas unitarias: se evita importar pandas/GCP y se devuelve siempre 0, garantizando compatibilidad sin dependencias pesadas.
+1. Se intenta el artefacto local (`MODEL_LOCAL_PATH`, por defecto `challenge/xgb_model.pkl`).
+2. Si no estuviera disponible y no se hubiera fijado `CHALLENGE_API_DISABLE_GCP`, se descarga desde GCS (`GCS_BUCKET_NAME`, `GCS_MODEL_BLOB_PATH`).
+3. Cuando se habilita `CHALLENGE_API_FAKE_MODEL=1`, se activa el modo simulado para los tests unitarios, evitando dependencias pesadas.
 
 ### 4.3 BigQuery
 
-`CHALLENGE_API_ENABLE_BQ=1` activa el registro de predicciones (tabla `BQ_TABLE_ID`). En ausencia de permisos o con el flag desactivado, la API sigue operativa pero omite el logging.
+Al establecer `CHALLENGE_API_ENABLE_BQ=1`, los registros de predicción son enviados a la tabla `BQ_TABLE_ID`. En caso de no contar con credenciales, la API continúa operativa y omite el registro.
 
 ### 4.4 Variables de entorno relevantes
 
 | Variable                       | Propósito                                                                |
 |-------------------------------|--------------------------------------------------------------------------|
-| `USE_XGBOOST`                 | Fuerza el uso de XGBoost en el entrenamiento del modelo (si disponible). |
-| `MODEL_LOCAL_PATH`            | Ruta al modelo serializado.                                              |
-| `CHALLENGE_API_DISABLE_GCP`   | Evita inicializar clientes de GCS y BQ.                                  |
-| `CHALLENGE_API_ENABLE_BQ`     | Habilita el logeo de predicciones en BigQuery.                           |
-| `CHALLENGE_API_FAKE_MODEL`    | Usa el stub interno para pruebas (sin pandas/GCP).                       |
+| `USE_XGBOOST`                 | Indica si debe utilizarse XGBoost durante el entrenamiento.              |
+| `MODEL_LOCAL_PATH`            | Determina la ruta del modelo serializado.                                |
+| `CHALLENGE_API_DISABLE_GCP`   | Inhibe la inicialización de clientes GCS y BigQuery.                     |
+| `CHALLENGE_API_ENABLE_BQ`     | Habilita el registro de predicciones en BigQuery.                        |
+| `CHALLENGE_API_FAKE_MODEL`    | Habilita el modo simulado para los tests unitarios.                      |
 
 ## 5. Despliegue en Cloud Run
 
 ### 5.1 Resumen
 
-- Imagen Docker basada en `challenge/api`.
-- Despliegue manual o vía `.github/workflows/cd.yml` (requiere `GCP_SA_KEY`, `project_id`, repositorio de Artifact Registry, etc.).
-- Servicio activo: `https://api-inference-deploy-581710028917.us-central1.run.app`.
+- La imagen Docker se construyó con la carpeta `challenge/api`.
+- El despliegue quedó automatizado mediante `.github/workflows/cd.yml` y puede ejecutarse también de forma manual.
+- El servicio activo se publica en `https://api-inference-deploy-581710028917.us-central1.run.app`.
 
 ### 5.2 Pasos manuales básicos
 
@@ -124,7 +128,7 @@ gcloud run deploy api-inference-deploy \
   --allow-unauthenticated
 ```
 
-*(Ajustar nombres según proyecto y repositorio configurados en `cd.yml`.)*
+*(El nombre del proyecto y del repositorio debe ajustarse según la configuración definida en `cd.yml`.)*
 
 ## 6. Pruebas y Cobertura
 
@@ -140,54 +144,65 @@ make install
 make model-test
 ```
 
-(Se ignoran las advertencias de deprecación de los clientes de Google configurando `PYTHONWARNINGS` en el Makefile.)
+Las advertencias de deprecación de los clientes de Google se silencian mediante la variable `PYTHONWARNINGS` incluida en el Makefile.
 
-### 6.3 Prueba de estrés
+### 6.3 Pruebas de la API
+
+```bash
+make api-test
+```
+
+Durante la ejecución se habilita `CHALLENGE_API_FAKE_MODEL=1`, por lo que la inferencia se resuelve con el stub interno y no se requieren pandas ni credenciales de GCP.
+
+### 6.4 Prueba de estrés
 
 ```bash
 LOCUST_USERS=5 LOCUST_SPAWN_RATE=1 LOCUST_RUNTIME=30s make stress-test
 ```
 
-Notas:
+Notas relevantes:
 
-- El script de Locust (`tests/stress/api_stress.py`) usa payloads simples (no el formato batch).
-- `sitecustomize.py` ofrece shims compatibles con Flask 1.1 y Werkzeug 3.x.
-- La prueba requiere que el entorno tenga salida DNS/HTTPS hacia Cloud Run; en el sandbox local se observó `NameResolutionError` debido a restricciones de red.
+- El script de Locust (`tests/stress/api_stress.py`) utiliza payloads simples.
+- `sitecustomize.py` mantiene compatibilidad entre Flask 1.1 y Werkzeug 3.x.
+- Cuando el entorno carece de salida HTTPS, las solicitudes fallan; en GitHub Actions (`Ubuntu 22.04`) se completaron 1 857 llamadas a `/predict` con `25` usuarios y `5` usuarios por segundo, alcanzando `p99 ≈ 9.9 s` y un máximo cercano a `12 s`.
 
-### 6.4 Reportes
+### 6.5 Reportes
 
 - Cobertura HTML: `reports/html`.
-- Stress test: `reports/stress-test.html`.
+- Resultado del stress test: `reports/stress-test.html`.
 
 ## 7. CI/CD
 
 ### 7.1 CI (`.github/workflows/ci.yml`)
 
-- Dispara en `push`/`pull_request` hacia `main` y `dev`.
-- Realiza `make install` y `make model-test`.
+- El workflow se ejecuta en `push` hacia `main` o `dev`, y en `pull_request` cuyo destino sea `main`.
+- El runner instala dependencias (`make install`), ejecuta `make test` y finalmente corre `make stress-test` contra la instancia desplegada en Cloud Run.
 
 ### 7.2 CD (`.github/workflows/cd.yml`)
 
-- Pensado para desplegar a Cloud Run usando Artifact Registry.
-- Requiere secretos: `GCP_SA_KEY`, `project_id`, nombre de imagen, etc. (ver archivo).
+- El despliegue continuo fue previsto para Artifact Registry y Cloud Run.
+- Se requieren los secretos `GCP_SA_KEY`, `project_id` y los nombres de imagen configurados en el workflow.
 
 ## 8. Consideraciones Técnicas
 
-1. **Compatibilidad macOS/Accelerate**: se usa `NPY_DISABLE_MACOS_ACCELERATE=1` para evitar segfaults de numpy en macOS 14.
-2. **Locust 1.6**: el módulo `sitecustomize.py` reintroduce símbolos (`jinja2.escape`, `Markup`, `itsdangerous.json`, `werkzeug.wrappers.BaseResponse`/`url_quote`) que Flask 1.1 espera.
-3. **Modo fake en la API**: permite ejecutar los tests incluso sin pandas/GCP instalados.
-4. **Payloads de estrés**: el contrato histórico usaba `{"flights": [...]}` pero la API productiva expone el formato simple; se actualizó el test para usar el formato soportado por el endpoint real.
+1. **Compatibilidad macOS/Accelerate**: `NPY_DISABLE_MACOS_ACCELERATE=1` es usado para evitar fallos de numpy bajo macOS 14.
+2. **Locust 1.6**: `sitecustomize.py` reintroduce símbolos esperados por versiones antiguas de Flask y Werkzeug.
+3. **Modo simulado de la API**: la bandera `CHALLENGE_API_FAKE_MODEL` habilita pruebas ligeras sin dependencias externas.
+4. **Payloads de estrés**: el formato simple fue alineado con el endpoint productivo, manteniendo la compatibilidad necesaria.
+5. **Compatibilidad AnyIO**: el pin `anyio<4` asegura que `fastapi.testclient.TestClient` se mantenga operativo.
 
 ## 9. Limitaciones y Trabajo Futuro
 
-- El entorno de desarrollo usado (sandbox) negó la resolución DNS para Python/Locust, por lo que no se obtuvo un stress test exitoso localmente. Se recomienda repetirlo desde un runner con red.
-- Las pruebas unitarias de la API se deshabilitaron temporalmente debido a la incompatibilidad entre Starlette 0.20.4 y AnyIO 4.x en los runners de CI.
-- El modelo no evalúa métricas sobre `X_test`; podría añadirse un reporte de desempeño o guardar un artefacto con estadísticas.
-- `cd.yml` requiere variables sensibles y configuración adicional para ejecutarse end-to-end.
-- Podrían agregarse pruebas de integración API↔modelo en un entorno con el artefacto real de GCS.
+- **Ejecución fuera de CI**: en entornos sin salida HTTPS el stress test no puede contactar Cloud Run; en CI el escenario ya queda cubierto.
+- **Actualización de stack**: una migración a versiones recientes de FastAPI/Starlette permitirá retirar el pin de AnyIO.
+- **Métricas adicionales**: podrían incorporarse reportes del desempeño del modelo sobre `X_test` y tableros de monitoreo.
+- **Credenciales de CD**: se requiere la carga de secretos de GCP para ejecutar `cd.yml` end-to-end.
+- **Pruebas extendidas**: la integración API↔modelo podría enriquecerse en entornos con acceso al artefacto real de GCS.
 
 ## 10. Checklist de Reproducción
 
 1. `make install`
 2. `make model-test`
-3. Despliegue manual o vía `cd.yml` con las credenciales configuradas.
+3. `make api-test`
+4. `make stress-test`
+5. Desplegar mediante `cd.yml` o con los comandos manuales indicados

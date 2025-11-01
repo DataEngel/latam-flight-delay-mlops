@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: Full CI Pipeline
 
 on:
   push:
@@ -8,11 +8,10 @@ on:
   pull_request:
     branches:
       - main
-      - dev
 
 jobs:
-  tests:
-    name: Run Model Tests
+  test-suite:
+    name: Run Full Test Suite
     runs-on: ubuntu-latest
 
     steps:
@@ -29,5 +28,8 @@ jobs:
           python -m pip install --upgrade pip
           make install
 
-      - name: Run model tests
-        run: make model-test
+      - name: Run model and API tests
+        run: make test
+
+      - name: Run stress tests
+        run: make stress-test

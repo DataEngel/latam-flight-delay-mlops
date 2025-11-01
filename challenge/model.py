@@ -9,7 +9,7 @@ import pandas as pd
 from sklearn.linear_model import LogisticRegression
 from sklearn.model_selection import train_test_split
 
-# Se configura el registro de logs para el seguimiento del proceso.
+# El registro de logs es configurado para permitir el seguimiento del proceso.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -20,12 +20,12 @@ _USE_XGBOOST = os.getenv("USE_XGBOOST", "").lower() in {"1", "true", "yes"}
 
 class DelayModel:
     """
-    Clase encargada del modelado y predicción de retrasos de vuelos en el aeropuerto SCL.
-    El código fue estructurado a partir del notebook del Data Scientist y adaptado para su uso en producción.
+    La clase se encarga del modelado y la predicción de retrasos de vuelos en el aeropuerto SCL.
+    El código fue derivado del notebook del Data Scientist y adaptado para su uso en producción.
     """
 
     def __init__(self):
-        """Se inicializa la clase con los atributos del modelo y las columnas de características."""
+        """La clase queda inicializada con los atributos del modelo y las columnas de características."""
         self._model = None
         self._feature_columns = None
 
