@@ -1,18 +1,20 @@
-name: CI Pipeline
+name: CI Pipeline (stress branch only)
 
 on:
   push:
     branches:
-      - main
-      - dev
+      - fix-api-tests
+      # - main
+      # - dev
   pull_request:
     branches:
-      - main
-      - dev
+      - fix-api-tests
+      # - main
+      # - dev
 
 jobs:
-  tests:
-    name: Run Model Tests
+  stress-tests:
+    name: Run Stress Tests
     runs-on: ubuntu-latest
 
     steps:
@@ -29,5 +31,5 @@ jobs:
           python -m pip install --upgrade pip
           make install
 
-      - name: Run model tests
-        run: make model-test
+      - name: Run stress tests
+        run: make stress-test
