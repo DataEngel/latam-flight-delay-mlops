@@ -1,10 +1,68 @@
-"""
-API tests deshabilitados.
+import importlib
 
-Durante la integración continua en GitHub Actions se detectó una
-incompatibilidad entre la versión de Starlette incluida en FastAPI 0.86
-y AnyIO 4.x, donde la función `anyio.start_blocking_portal` ya no está
-disponible. Hasta contar con tiempo para actualizar el stack o fijar
-las dependencias globales, se desactiva el módulo de pruebas de la API
-para mantener la suite estable.
-"""
+import pytest
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture()
+def api_module(monkeypatch):
+    """Reload the API module with fake mode enabled for deterministic tests."""
+    monkeypatch.setenv("CHALLENGE_API_FAKE_MODEL", "1")
+    monkeypatch.setenv("CHALLENGE_API_DISABLE_GCP", "1")
+    monkeypatch.setenv("CHALLENGE_API_ENABLE_BQ", "0")
+
+    from challenge.api import api
+
+    importlib.reload(api)
+    return api
+
+
+@pytest.fixture()
+def client(api_module):
+    with TestClient(api_module.app) as test_client:
+        yield test_client
+
+
+def test_health_endpoint_returns_ok(client):
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_predict_returns_delay_details(client):
+    payload = {"OPERA": "Grupo LATAM", "MES": 5, "TIPOVUELO": "N"}
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["delay_prediction"] == 0
+    assert body["details"] == {
+        "airline": "Grupo LATAM",
+        "month": 5,
+        "flight_type": "N",
+    }
+
+
+def test_predict_rejects_invalid_airline(client):
+    payload = {"OPERA": "Unknown Airline", "MES": 5, "TIPOVUELO": "N"}
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == "Invalid airline (OPERA)"
+
+
+def test_predict_batch_request(client):
+    payload = {
+        "flights": [
+            {"OPERA": "Grupo LATAM", "MES": 1, "TIPOVUELO": "N"},
+            {"OPERA": "Sky Airline", "MES": 12, "TIPOVUELO": "I"},
+        ]
+    }
+
+    response = client.post("/predict", json=payload)
+
+    assert response.status_code == 200
+    assert response.json() == {"predict": [0, 0]}
