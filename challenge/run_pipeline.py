@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Script principal encargado de la ejecución del pipeline completo de predicción de retrasos LATAM.
-Permite realizar las operaciones de entrenamiento, predicción o ambas, según el modo especificado.
+El pipeline completo de predicción de retrasos de LATAM es orquestado desde este script.
+Las operaciones de entrenamiento, predicción o ambas quedan disponibles según el modo indicado.
 
 Ejemplos de uso en terminal:
 
 python run_pipeline.py --mode train
 python run_pipeline.py --mode predict --predict_data ../data/data.csv
 python run_pipeline.py --mode both
-
 """
 
 import argparse
@@ -18,7 +17,7 @@ import logging
 from model import DelayModel
 
 
-# Se configura el registro de logs para el seguimiento del proceso.
+# El registro de logs es configurado para permitir el seguimiento del proceso.
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s"
@@ -27,8 +26,7 @@ logging.basicConfig(
 
 def main():
     """
-    Se define el flujo principal del pipeline.
-    Permite ejecutar los modos de entrenamiento, predicción o ambos de forma controlada.
+    El flujo principal del pipeline es definido y se habilitan los modos de entrenamiento, predicción o ambos.
     """
     parser = argparse.ArgumentParser(
         description="Pipeline LATAM - Entrenamiento y predicción de retrasos"
