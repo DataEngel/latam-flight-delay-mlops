@@ -6,7 +6,7 @@ from fastapi.testclient import TestClient
 
 @pytest.fixture()
 def api_module(monkeypatch):
-    """Reload the API module with fake mode enabled for deterministic tests."""
+    """El módulo de la API es recargado con el modo simulado habilitado para garantizar determinismo."""
     monkeypatch.setenv("CHALLENGE_API_FAKE_MODEL", "1")
     monkeypatch.setenv("CHALLENGE_API_DISABLE_GCP", "1")
     monkeypatch.setenv("CHALLENGE_API_ENABLE_BQ", "0")

@@ -1,16 +1,13 @@
-name: Full CI Pipeline (fix-api-tests)
+name: Full CI Pipeline
 
 on:
   push:
     branches:
-      - fix-api-tests
-      # - main
-      # - dev
+      - main
+      - dev
   pull_request:
     branches:
-      - fix-api-tests
-      # - main
-      # - dev
+      - main
 
 jobs:
   test-suite:

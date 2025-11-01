@@ -29,7 +29,7 @@ LOCUST_SPAWN_RATE ?= 5
 LOCUST_RUNTIME ?= 60s
 .PHONY: stress-test
 stress-test:
-	# change stress url to your deployed app 
+	# El URL del stress test debe ser actualizado con el despliegue correspondiente.
 	@if ! command -v locust >/dev/null 2>&1; then \
 		echo "Locust is not installed. Run 'make install' (or 'pip install -r requirements-test.txt') and retry."; \
 		exit 1; \
