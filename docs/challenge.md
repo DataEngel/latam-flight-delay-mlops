@@ -100,6 +100,8 @@ El modelo es cargado siguiendo este orden de precedencia:
 
 Al establecer `CHALLENGE_API_ENABLE_BQ=1`, los registros de predicción son enviados a la tabla `BQ_TABLE_ID`. En caso de no contar con credenciales, la API continúa operativa y omite el registro.
 
+![Registros recientes en BigQuery](predsInBQ.png)
+
 ### 4.4 Variables de entorno relevantes
 
 | Variable                       | Propósito                                                                |
